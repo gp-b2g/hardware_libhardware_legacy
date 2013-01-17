@@ -132,6 +132,7 @@ protected:
             STRATEGY_DTMF,
             STRATEGY_ENFORCED_AUDIBLE,
             STRATEGY_VIDEOCALL,
+			STRATEGY_FM,
             NUM_STRATEGIES
         };
 
@@ -162,6 +163,8 @@ protected:
         static const VolumeCurvePoint sDefaultMediaVolumeCurve[AudioPolicyManagerBase::VOLCNT];
         // volume curve for media strategy on headset
         static const VolumeCurvePoint sHeadsetMediaVolumeCurve[AudioPolicyManagerBase::VOLCNT];
+		// volume curve for FM strategy on headset
+        static const VolumeCurvePoint sHeadsetFMVolumeCurve[AudioPolicyManagerBase::VOLCNT];
         // volume curve for media strategy on speakers
         static const VolumeCurvePoint sSpeakerMediaVolumeCurve[AudioPolicyManagerBase::VOLCNT];
         // volume curve for sonification strategy on speakers

@@ -20,7 +20,6 @@
 #include <hardware_legacy/AudioPolicyManagerBase.h>
 #include <hardware/audio_effect.h>
 #include <math.h>
-#include <stdio.h>
 
 namespace android_audio_legacy {
 
@@ -747,13 +746,13 @@ status_t AudioPolicyManagerBase::startInput(audio_io_handle_t input)
 #ifdef AUDIO_POLICY_TEST
     if (mTestInput == 0)
 #endif //AUDIO_POLICY_TEST
-    /*{
+    {
         // refuse 2 active AudioRecord clients at the same time
         if (getActiveInput() != 0) {
             LOGW("startInput() input %d failed: other input already started", input);
             return INVALID_OPERATION;
         }
-    }*/
+    }
 
     AudioParameter param = AudioParameter();
     param.addInt(String8(AudioParameter::keyRouting), (int)inputDesc->mDevice);
@@ -784,6 +783,7 @@ status_t AudioPolicyManagerBase::stopInput(audio_io_handle_t input)
         AudioParameter param = AudioParameter();
         param.addInt(String8(AudioParameter::keyRouting), 0);
         mpClientInterface->setParameters(input, param.toString());
+        setOutputDevice(mHardwareOutput, getNewDevice(mHardwareOutput), true);
         inputDesc->mRefCount = 0;
         return NO_ERROR;
     }
@@ -1068,20 +1068,6 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
     mTotalEffectsCpuLoad(0), mTotalEffectsMemory(0),
     mA2dpSuspended(false)
 {
-    //Check if HDMI is the primary interface
-    //In that case we need to route audio to HDMI
-    bool hdmi_as_primary = false;
-    const char* file = "/sys/class/graphics/fb0/hdmi_primary";
-    FILE* fp = fopen(file, "r");
-    unsigned char mHwdeviceName[80];
-    FILE *mDeviceFilePointer;
-    bool isTargetLiquid = false;
-
-    if(fp) {
-        LOGD("%s: HDMI is used as primary interface", __FUNCTION__);
-        hdmi_as_primary = true;
-        fclose(fp);
-    }
     mpClientInterface = clientInterface;
 
     for (int i = 0; i < AudioSystem::NUM_FORCE_USE; i++) {
@@ -1091,34 +1077,16 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
     initializeVolumeCurves();
 
     // devices available by default are speaker, ear piece and microphone
-    {
-        unsigned int minLength;
-        mDeviceFilePointer = fopen("/sys/devices/system/soc/soc0/hw_platform","rb");
-        if (mDeviceFilePointer) {
-            (void)fgets((char *)mHwdeviceName,sizeof(mHwdeviceName),mDeviceFilePointer);
-            minLength = strnlen((const char *)mHwdeviceName,sizeof(mHwdeviceName));
-            if (sizeof("Liquid") <= minLength)
-                minLength = strnlen("Liquid",sizeof("Liquid"));
-            if  (!strncmp("Liquid",(const char *)mHwdeviceName,minLength))
-                isTargetLiquid = true;
-            fclose (mDeviceFilePointer);
-        } else
-            LOGE("\n ERROR: Could not open hw_platform file\n");
-    }
-
-    if (isTargetLiquid == true)
-        mAvailableOutputDevices = AudioSystem::DEVICE_OUT_SPEAKER;
-    else
-        mAvailableOutputDevices = AudioSystem::DEVICE_OUT_EARPIECE |
-                                  AudioSystem::DEVICE_OUT_SPEAKER;
+    mAvailableOutputDevices = AudioSystem::DEVICE_OUT_EARPIECE |
+                        AudioSystem::DEVICE_OUT_SPEAKER;
     mAvailableInputDevices = AudioSystem::DEVICE_IN_BUILTIN_MIC;
 
-    if(hdmi_as_primary) {
-        // If HDMI is used as primary then all audio should always be
-        // routed to HDMI by default. The connection can be assumed to
-        // be always ON. Overrideable by Bluetooth.
-        mAvailableOutputDevices |= AUDIO_DEVICE_OUT_AUX_DIGITAL;
-    }
+#ifdef USE_HDMI_AS_PRIMARY
+    // If HDMI is used as primary then all audio should always be
+    // routed to HDMI by default. The connection can be assumed to
+    // be always ON. Overrideable by Bluetooth.
+    mAvailableOutputDevices |= AUDIO_DEVICE_OUT_AUX_DIGITAL;
+#endif
 
 #ifdef WITH_A2DP
     mA2dpOutput = 0;
@@ -1560,15 +1528,16 @@ void AudioPolicyManagerBase::checkOutputForAllStrategies()
     checkOutputForStrategy(STRATEGY_SONIFICATION);
     checkOutputForStrategy(STRATEGY_MEDIA);
     checkOutputForStrategy(STRATEGY_DTMF);
+	checkOutputForStrategy(STRATEGY_FM);
 }
 
 void AudioPolicyManagerBase::checkA2dpSuspend()
 {
     // suspend A2DP output if:
     //      (NOT already suspended) &&
-    //      ((SCO device is connected &&
-    //       (forced usage for communication || for record is SCO))) ||
-    //      (phone state is ringing || in call)
+    //      ((SCO device is connected) &&
+    //       ((forced usage for communication || for record is SCO) ||
+    //       (phone state is ringing || in call)))
     //
     // restore A2DP output if:
     //      (Already suspended) &&
@@ -1591,10 +1560,10 @@ void AudioPolicyManagerBase::checkA2dpSuspend()
             mA2dpSuspended = false;
         }
     } else {
-        if (((mScoDeviceAddress != "") &&
+        if ((mScoDeviceAddress != "") &&
              ((mForceUse[AudioSystem::FOR_COMMUNICATION] == AudioSystem::FORCE_BT_SCO) ||
-              (mForceUse[AudioSystem::FOR_RECORD] == AudioSystem::FORCE_BT_SCO))) ||
-             ((mPhoneState == AudioSystem::MODE_IN_CALL) ||
+              (mForceUse[AudioSystem::FOR_RECORD] == AudioSystem::FORCE_BT_SCO) ||
+              (mPhoneState == AudioSystem::MODE_IN_CALL) ||
               (mPhoneState == AudioSystem::MODE_RINGTONE))) {
 
             mpClientInterface->suspendOutput(mA2dpOutput);
@@ -1632,6 +1601,8 @@ uint32_t AudioPolicyManagerBase::getNewDevice(audio_io_handle_t output, bool fro
     } else if (outputDesc->isUsedByStrategy(STRATEGY_MEDIA)) {
         device = getDeviceForStrategy(STRATEGY_MEDIA, fromCache);
     } else if (outputDesc->isUsedByStrategy(STRATEGY_DTMF)) {
+        device = getDeviceForStrategy(STRATEGY_DTMF, fromCache);
+	} else if (outputDesc->isUsedByStrategy(STRATEGY_FM)) {
         device = getDeviceForStrategy(STRATEGY_DTMF, fromCache);
     }
 
@@ -1671,17 +1642,19 @@ AudioPolicyManagerBase::routing_strategy AudioPolicyManagerBase::getStrategy(
         return STRATEGY_SONIFICATION;
     case AudioSystem::DTMF:
         return STRATEGY_DTMF;
-    default:
-        LOGE("unknown stream type");
     case AudioSystem::SYSTEM:
         // NOTE: SYSTEM stream uses MEDIA strategy because muting music and switching outputs
         // while key clicks are played produces a poor result
     case AudioSystem::TTS:
     case AudioSystem::MUSIC:
+		return STRATEGY_MEDIA;
     case AudioSystem::FM:
-        return STRATEGY_MEDIA;
+        return STRATEGY_FM;
     case AudioSystem::ENFORCED_AUDIBLE:
         return STRATEGY_ENFORCED_AUDIBLE;
+    default:
+        LOGE("unknown stream type");
+		return STRATEGY_MEDIA;
     }
 }
 
@@ -1791,6 +1764,46 @@ uint32_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy strategy,
         // FALL THROUGH
 
     case STRATEGY_MEDIA: {
+        uint32_t device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_WIRED_HEADPHONE;
+        if (device2 == 0) {
+            device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_WIRED_HEADSET;
+        }
+#ifdef WITH_A2DP
+        if ((mA2dpOutput != 0) && !mA2dpSuspended &&
+                (strategy == STRATEGY_MEDIA || a2dpUsedForSonification())) {
+            if (device2 == 0) {
+                device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_BLUETOOTH_A2DP;
+            }
+            if (device2 == 0) {
+                device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES;
+            }
+            if (device2 == 0) {
+                device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER;
+            }
+        }
+#endif
+        if (device2 == 0) {
+            device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_DGTL_DOCK_HEADSET;
+        }
+        if (device2 == 0) {
+            device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_AUX_DIGITAL;
+        }
+        if (device2 == 0) {
+            device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_ANLG_DOCK_HEADSET;
+        }
+        if (device2 == 0) {
+            device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_SPEAKER;
+        }
+
+        // device is DEVICE_OUT_SPEAKER if we come from case STRATEGY_SONIFICATION or
+        // STRATEGY_ENFORCED_AUDIBLE, 0 otherwise
+        device |= device2;
+        if (device == 0) {
+            LOGE("getDeviceForStrategy() speaker device not found");
+        }
+        } break;
+
+		case STRATEGY_FM: {
         uint32_t device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_WIRED_HEADPHONE;
         if (device2 == 0) {
             device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_WIRED_HEADSET;
@@ -1971,10 +1984,6 @@ AudioPolicyManagerBase::device_category AudioPolicyManagerBase::getDeviceCategor
         device &= AUDIO_DEVICE_OUT_ALL_A2DP;
     }
 
-    LOGW_IF(AudioSystem::popCount(device) != 1,
-            "getDeviceCategory() invalid device combination: %08x",
-            device);
-
     switch(device) {
         case AUDIO_DEVICE_OUT_EARPIECE:
             return DEVICE_CATEGORY_EARPIECE;
@@ -2050,10 +2059,14 @@ const AudioPolicyManagerBase::VolumeCurvePoint
     {1, -58.0f}, {20, -40.0f}, {60, -17.0f}, {100, 0.0f}
 };
 
-//add by zhangku for adjust headset volume
 const AudioPolicyManagerBase::VolumeCurvePoint
     AudioPolicyManagerBase::sHeadsetMediaVolumeCurve[AudioPolicyManagerBase::VOLCNT] = {
     {1, -40.0f}, {20, -30.0f}, {60, -20.0f}, {100, -10.0f}
+};
+
+const AudioPolicyManagerBase::VolumeCurvePoint
+    AudioPolicyManagerBase::sHeadsetFMVolumeCurve[AudioPolicyManagerBase::VOLCNT] = {
+    {1, -100.0f}, {20, -40.0f}, {60, -30.0f}, {100, -20.0f}
 };
 
 const AudioPolicyManagerBase::VolumeCurvePoint
@@ -2086,12 +2099,22 @@ const AudioPolicyManagerBase::VolumeCurvePoint
         sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
     },
     {  // STRATEGY_DTMF
-        sDefaultVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        sHeadsetMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
         sDefaultVolumeCurve, // DEVICE_CATEGORY_SPEAKER
         sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
     },
     { // STRATEGY_ENFORCED_AUDIBLE
+        sHeadsetMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        sSpeakerSonificationVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
+    },
+    { // STRATEGY_VIDEOCALL
         sDefaultVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        sSpeakerSonificationVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
+    },
+    { // STRATEGY_FM
+        sHeadsetFMVolumeCurve, // DEVICE_CATEGORY_HEADSET
         sSpeakerSonificationVolumeCurve, // DEVICE_CATEGORY_SPEAKER
         sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
     },

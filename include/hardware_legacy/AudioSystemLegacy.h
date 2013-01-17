@@ -64,7 +64,7 @@ enum audio_source {
     AUDIO_SOURCE_VOICE_COMMUNICATION = 7,
     AUDIO_SOURCE_FM_RX = 8,
     AUDIO_SOURCE_FM_RX_A2DP = 9,
-    AUDIO_SOURCE_MAX = AUDIO_SOURCE_FM_RX_A2DP,
+    AUDIO_SOURCE_MAX = AUDIO_SOURCE_FM_RX,
 
     AUDIO_SOURCE_LIST_END  // must be last - used to validate audio source type
 };
@@ -92,8 +92,8 @@ public:
         ENFORCED_AUDIBLE = 7, // Sounds that cannot be muted by user and must be routed to speaker
         DTMF             = 8,
         TTS              = 9,
-        VIDEO_TELEPHONY  = 10,
-        FM               = 11,
+        FM               = 10,
+        VIDEO_TELEPHONY  = 11,
         NUM_STREAM_TYPES
     };
 
